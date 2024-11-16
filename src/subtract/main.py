@@ -1,7 +1,7 @@
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Callable, Optional, Annotated
+from typing import Callable, Optional, Annotated, Iterable
 
 import typer
 import supercut.ffmpeg as ffmpeg
@@ -69,15 +69,21 @@ def drop_random_words(subs: pysubs2.SSAFile, keep_ratio: float) -> pysubs2.SSAFi
         event.plaintext = replacer(event.text)
     return subs
 
+def extract_subs(video:Path, language:str="eng")->pysubs2.SSAFile:
+    return pysubs2.SSAFile.from_string(
+        ffmpeg.extract_subs_by_language(video, language=language).decode("utf8")
+    )
 
-def get_subs(video: Path) -> pysubs2.SSAFile:
-    subs_path = video.with_suffix(".ssa")
+def get_subs(video: Path, language:str|None=None) -> pysubs2.SSAFile:
+    if language:
+        suffix = f".{language}.ssa"
+    else:
+        suffix = ".ssa"
+    subs_path = video.with_suffix(suffix)
     if subs_path.exists():
         return pysubs2.SSAFile.load(str(subs_path))
 
-    subs = pysubs2.SSAFile.from_string(
-        ffmpeg.extract_subs_by_language(video).decode("utf8")
-    )
+    subs = extract_subs(video, language=language)
     subs.save(str(subs_path))
 
     return subs
@@ -99,7 +105,7 @@ def play_with_subs(video: Path, subs: pysubs2.SSAFile):
 
 
 @app.command()
-def main(
+def drop(
     video: Annotated[
         Path,
         typer.Argument(help="The video to watch. Should contain embedded subtitles."),
@@ -122,3 +128,32 @@ def main(
         subs = drop_random_words(subs, (100 - drop_rate) / 100)
 
     play_with_subs(video, subs)
+
+
+def merge_subs(video:Path, languages:list[str])->pysubs2.SSAFile:
+    subs_path = video.with_suffix(f".{'_'.join(languages)}.ssa")
+
+    if subs_path.exists():
+        return pysubs2.SSAFile.load(str(subs_path))
+
+    many_subs = [get_subs(video, language) for language in languages]
+
+    merged_subs, *other_subs = many_subs
+
+    for subs in other_subs:
+        merged_subs.events.extend(subs.events)
+
+    merged_subs.sort()
+    merged_subs.save(str(subs_path))
+
+    return merged_subs
+
+@app.command()
+def merge(video: Annotated[
+        Path,
+        typer.Argument(help="The video to watch. Should contain embedded subtitles."),
+    ], languages:Annotated[list[str], typer.Argument(help="Language codes to merge", )]):
+
+    merged_subs = merge_subs(video, languages)
+
+    play_with_subs(video, merged_subs)
